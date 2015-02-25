@@ -17,7 +17,6 @@ from time import sleep
 from os.path import exists
 
 from collections import deque
-from pkg_resources import resource_filename
 
 from octoprint.util.avr_isp import stk500v2
 from octoprint.util.avr_isp import ispBase
