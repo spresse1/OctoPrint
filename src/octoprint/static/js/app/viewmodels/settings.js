@@ -98,6 +98,7 @@ function SettingsViewModel(loginStateViewModel, usersViewModel) {
     self.feature_sdAlwaysAvailable = ko.observable(undefined);
     self.feature_swallowOkAfterResend = ko.observable(undefined);
     self.feature_repetierTargetTemp = ko.observable(undefined);
+    self.feature_pauseOnLowMaterial = ko.observable(undefined);
 
     self.serial_port = ko.observable();
     self.serial_baudrate = ko.observable();
@@ -211,6 +212,7 @@ function SettingsViewModel(loginStateViewModel, usersViewModel) {
         self.feature_sdAlwaysAvailable(response.feature.sdAlwaysAvailable);
         self.feature_swallowOkAfterResend(response.feature.swallowOkAfterResend);
         self.feature_repetierTargetTemp(response.feature.repetierTargetTemp);
+        self.feature_pauseOnLowMaterial(response.feature.pauseOnLowMaterial);
 
         self.serial_port(response.serial.port);
         self.serial_baudrate(response.serial.baudrate);
@@ -277,7 +279,8 @@ function SettingsViewModel(loginStateViewModel, usersViewModel) {
                 "sdSupport": self.feature_sdSupport(),
                 "sdAlwaysAvailable": self.feature_sdAlwaysAvailable(),
                 "swallowOkAfterResend": self.feature_swallowOkAfterResend(),
-                "repetierTargetTemp": self.feature_repetierTargetTemp()
+                "repetierTargetTemp": self.feature_repetierTargetTemp(),
+                "pauseOnLowMaterial": self.feature_pauseOnLowMaterial()
             },
             "serial": {
                 "port": self.serial_port(),
