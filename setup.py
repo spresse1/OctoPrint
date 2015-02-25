@@ -143,10 +143,6 @@ def params():
 			"octoprint = octoprint:main"
 		]
 	}
-	
-	package_data = {
-		'src/octoprint/' : ['gpiosetup.sh']
-	}
 
 	#scripts = {
 	#	"scripts/octoprint.init": "/etc/init.d/octoprint"
