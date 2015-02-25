@@ -72,7 +72,8 @@ default_settings = {
 		"sdSupport": True,
 		"sdAlwaysAvailable": False,
 		"swallowOkAfterResend": True,
-		"repetierTargetTemp": False
+		"repetierTargetTemp": False,
+		"pauseOnLowMaterial": False
 	},
 	"folder": {
 		"uploads": None,

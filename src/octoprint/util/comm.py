@@ -13,8 +13,11 @@ import threading
 import Queue as queue
 import logging
 import serial
+from time import sleep
+from os.path import exists
 
 from collections import deque
+from pkg_resources import resource_filename
 
 from octoprint.util.avr_isp import stk500v2
 from octoprint.util.avr_isp import ispBase
@@ -182,6 +185,8 @@ class MachineCom(object):
 		self._regex_temp = re.compile("(B|T(\d*)):\s*(%s)(\s*\/?\s*(%s))?" % (positiveFloatPattern, positiveFloatPattern))
 		self._regex_repetierTempExtr = re.compile("TargetExtr([0-9]+):(%s)" % positiveFloatPattern)
 		self._regex_repetierTempBed = re.compile("TargetBed:(%s)" % positiveFloatPattern)
+		self._regex_getPosition = re.compile("X:%s Y:%s Z:%s" % (floatPattern,floatPattern,floatPattern))
+		self._regex_m114Output = re.compile("X:(?P<x>%s) Y:(?P<y>%s) Z:(?P<z>%s)" % (floatPattern,floatPattern,floatPattern))
 
 		# multithreading locks
 		self._sendNextLock = threading.Lock()
@@ -191,6 +196,11 @@ class MachineCom(object):
 		self.thread = threading.Thread(target=self._monitor)
 		self.thread.daemon = True
 		self.thread.start()
+
+		# Low Material Detection threads
+		self._lowMatThreads = []
+		self._m114Semaphore = None
+		self._position = {}
 
 	def __del__(self):
 		self.close()
@@ -396,6 +406,16 @@ class MachineCom(object):
 				self.sendCommand("M24")
 			else:
 				self._sendNext()
+
+			# Attempt to start the out-of-material detection, if enabled
+			if settings().getBoolean(["feature", "pauseOnLowMaterial"]):
+				self._logger.info("Low material detection is enabled")
+				# Spin up a daemon process
+				t = threading.Thread(target=self._monitorLowMaterial, args=(30,))
+				t.daemon=True
+				t.start()
+				self._logger.info("Low material thread started")
+				self._lowMatThreads.append(t)
 		except:
 			self._errorValue = getExceptionString()
 			self._changeState(self.STATE_ERROR)
@@ -753,6 +773,11 @@ class MachineCom(object):
 						and self.isOperational():
 					self._callback.mcMessage(line)
 
+				##~~ M114 Handling.
+				if line.startswith('X:') and self._regex_getPosition.match(line) is not None:
+					self._logger.info("Recieved M114 response")
+					self._processUpdatedPosition(line)
+
 				##~~ Parsing for feedback commands
 				if feedbackControls:
 					for name, matcher, template in feedbackControls:
@@ -908,6 +933,77 @@ class MachineCom(object):
 				self._changeState(self.STATE_ERROR)
 				eventManager().fire(Events.ERROR, {"error": self.getErrorString()})
 		self._log("Connection closed, closing down monitor")
+
+	def _monitorLowMaterial(self, gpio):
+		self._logger.info("Low material detection thread started")
+
+		# BBB gets sad if attempting to re-export a pin
+		if not exists("/sys/class/gpio/gpio30"):
+			with open("/sys/class/gpio/export",'w') as exportF:
+				exportF.write("30")
+		# Despite multiple online sources saying this should cause blocking reads,
+		# It doesn't appear to. #*&$@ing documentation
+		#with open("/sys/class/gpio/gpio30/edge",'w') as edgeF:
+		#	edgeF.write("falling")
+		while True:
+			# Reeopen each time or we'll start reading blanks (or would have to
+			# do ftell() which could be complicated on /sys
+			# Read: I don't trust the BBB gpio driver to handle it well.
+			with open("/sys/class/gpio/gpio30/value",'r') as valueF:
+				value = valueF.read()
+			self._logger.debug("Low mat det: read %s" % (value))
+			if not self.isBusy():
+					# The print must have been terminated previously
+					self._logger.info("Terminating low material detecton thread; machine is no longer busy");
+					break
+			elif int(value) is 0:
+				self._logger.info("Low mat det: no filament seen. Handling.")
+				if self.isPrinting():
+					#Only want to run this if the machine is moving.  If paused
+					# this will get triggered multiple times during a filament replacement
+					msg = "Low material detected, taking appropriate actions"
+					self._logger.warn(msg)
+					self._log(msg)
+					# Pause so we stop adding new commands to the queue (from the main gcode)
+					self.setPause(True)
+					# Wait for the command queue to drain
+					# In theory this will get us the exact position the machine stops in
+					while not self._commandQueue.empty():
+						sleep(1)
+					# The printer won't have finished the moves by the time we empty
+					# the queue.  And there appears to be no way to query what stack depth
+					# remains.  Best alternative: Probe position until we get two identical
+					# values
+					# Marlin appears to return where it will be at the end of the command queue
+					# but other printers may return actual positions.
+					oldPos=None
+					pos=self._getPosition()
+					while not oldPos == pos:
+						sleep(1)
+						oldPos=pos
+						pos = self._getPosition()
+					self._logger.info("Got position: %s" % (repr(pos)))
+					# Now that we know where the printhead stopped, we can handle
+					# moving for reload.
+					self.sendCommand("G91") # Relative mode
+					self.sendCommand("G0 Z5") # Back the Z off a bit
+					self.sendCommand("G90") #Absolute mode
+					# Grab the lock which controls sends to stall the command queue
+					# but allow jogging/etc
+					with self._sendingLock:
+						# Delay until pause lifted
+						while self.isPaused():
+							sleep(1)
+						self._logger.debug("Machine is no longer paused")
+						# Re-home, in case the user moved the printhead
+						self.sendCommand("G28 X0 Y0")
+						# Restore position, XY first
+						self.sendCommand("G0 X%s Y%s" % (pos['X'], pos['Y']))
+						# Then lower printhead back into place
+						self.sendCommand("G0  Z%s" % , pos['Z'])
+				else:
+					self._logger.debug("Low material detected, but printer paused. No action.")
+			sleep(10)
 
 	def _openSerial(self):
 		if self._port == 'AUTO':
@@ -1135,6 +1231,24 @@ class MachineCom(object):
 					pass
 		return cmd
 	_gcode_G1 = _gcode_G0
+
+	def _processUpdatedPosition(self,line):
+		matches = self._regex_m114Output.match(line)
+		self._position = {
+			'X': matches.group('x'),
+			'Y': matches.group('y'),
+			'Z': matches.group('z')
+		}
+		self._logger.info("Recieved new position information: %s" % repr(pos))
+		self._m114Semaphore.release()
+
+	def _getPosition(self):
+		self._logger.debug("Called _getPosition()")
+		#reset the semaphore
+		self._m114Semaphore=threading.Semaphore(0)
+		self.sendCommand("M114")
+		self._m114Semaphore.acquire()
+		return self._position
 
 	def _gcode_M0(self, cmd):
 		self.setPause(True)
