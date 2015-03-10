@@ -999,7 +999,7 @@ class MachineCom(object):
 						# Restore position, XY first
 						self.sendCommand("G0 X%s Y%s" % (pos['X'], pos['Y']))
 						# Then lower printhead back into place
-						self.sendCommand("G0  Z%s" % , pos['Z'])
+						self.sendCommand("G0  Z%s" % pos['Z'])
 				else:
 					self._logger.debug("Low material detected, but printer paused. No action.")
 			sleep(10)
